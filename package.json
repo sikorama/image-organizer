@@ -1,0 +1,33 @@
+{
+  "name": "image-organizer",
+  "version": "1.0.0",
+  "description": "A Node.js script to organize images based on EXIF metadata and AI tagging.",
+  "main": "index.js",
+  "scripts": {
+    "start": "node image-organizer.js",
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": [
+    "image",
+    "organizer",
+    "EXIF",
+    "AI",
+    "tagging"
+  ],
+  "author": "Stephane Sikora",
+  "license": "MIT",
+  "dependencies": {
+    "axios": "^1.6.2",
+    "chokidar": "^4.0.3",
+    "csv-parser": "^3.0.0",
+    "fs-extra": "^11.1.1",
+    "path": "^0.12.7",
+    "piexifjs": "^1.0.6",
+    "yargs": "^17.7.2"
+  },
+  "devDependencies": {
+    "eslint": "^8.56.0",
+    "jest": "^29.7.0",
+    "prettier": "^3.1.1"
+  }
+}

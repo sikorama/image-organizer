@@ -8,20 +8,38 @@
  *
  */
 
-const fs = require('fs-extra');
-const path = require('path');
-const csv = require('csv-parser');
-const piexif = require('piexifjs');
-// For LLM
-const axios = require('axios');
-
 const yargs = require('yargs/yargs');
 const { hideBin } = require('yargs/helpers');
-
-const chokidar = require('chokidar');
-
+const fs = require('fs-extra');
+const path = require('path');
+// For parsing cities file
+const csv = require('csv-parser');
+// For LLM
+const axios = require('axios');
+// For ollama
 const instance = axios.create();
 instance.defaults.timeout = 50000;
+// Watch folder mode
+const chokidar = require('chokidar');
+// For Exif Metadata
+const piexif = require('piexifjs');
+// For extracting videos metadata
+const ffmpeg = require('fluent-ffmpeg');
+const ffprobePath = require('ffprobe-static').path;
+ffmpeg.setFfprobePath(ffprobePath);
+
+// Fonction pour extraire les métadonnées d'un fichier vidéo
+function extractVideoMetadata(filePath) {
+    return new Promise((resolve, reject) => {
+        ffmpeg.ffprobe(filePath, (err, metadata) => {
+            if (err) {
+                reject(err);
+            } else {
+                resolve(metadata);
+            }
+        });
+    });
+}
 
 // Analyser les arguments de la ligne de commande
 const argv = yargs(hideBin(process.argv))
@@ -254,20 +272,23 @@ async function processFile(filePath, destDir, cities) {
         const stat = await fs.stat(filePath);
         let date = new Date(stat.mtime);
         //console.info(stat);
-        console.info("---", filePath);
+
         let location = false;
         let tags = false;
         let caption = false;
         let comment = "";
+        let skip = false;
 
         if (stat.isFile()) {
             const lcfp = filePath.toLowerCase();
-            let isJpegType = lcfp.endsWith('.jpg') || lcfp.toLowerCase().endsWith('.jpeg') || lcfp.toLowerCase().endsWith('.jfif');
-            let isPicture = isJpegType || lcfp.endsWith('.png') || lcfp.endsWith('.webp');
-            let isVideo = lcfp.endsWith('mp4');
 
-            // Vérifier si c'est un fichier et si c'est une image
+            const JpegExtensions = ['.jpg', '.jpeg', '.jfif'];
+            const NonJpegExtensions = ['.heic', '.png', '.webp'];
+            const videoExtensions = ['.mp4', '.avi', '.mov'];
 
+            let isJpegType = JpegExtensions.some(item => lcfp.endsWith(item));
+            let isPicture = isJpegType || NonJpegExtensions.some(item => lcfp.endsWith(item));
+            let isVideo = videoExtensions.some(item => lcfp.endsWith(item));
 
             if (isPicture || isVideo) {
 
@@ -275,70 +296,90 @@ async function processFile(filePath, destDir, cities) {
                 const parsedPath = path.parse(filePath);
 
                 let process_exif_data = false;
-                let process_llm = argv.useOllama && (!(isVideo && lcfp.endsWith('.webp')));
-                //console.log(process_llm, argv.useOllama, !isVideo, !lcfp.endsWith('.webp'));
+                let process_video_data = false;
+                let process_llm = argv.useOllama;
+
+                if (isVideo) {
+                    process_llm = false;
+                    process_video_data = true;
+                    skip = true;
+                }
 
                 if (isJpegType == true)
                     process_exif_data = true;
 
-                const imageBuffer = fs.readFileSync(filePath);
+                if (lcfp.endsWith('.webp') || lcfp.endsWith('.heic')) process_llm = false;
 
-                // Extraire les données EXIF
-                try {
+                //console.log(process_llm, argv.useOllama, !isVideo, !lcfp.endsWith('.webp'));
 
-                    exd = loadExifData(imageBuffer);
 
-                    if (exd) {
-                        try {
+                let imageBuffer;
+                if (isPicture) imageBuffer = fs.readFileSync(filePath);
 
-                            const piexifGPS = exd.GPS;
-                            if (piexifGPS) {
+                // Extract EXIF metadata
+                if (process_exif_data) {
 
-                                if (piexifGPS.hasOwnProperty(piexif.GPSIFD.GPSLatitude)) {
-                                    //console.info(exd.GPS);
-                                    // Extraire les données GPS
-                                    //const gpsVersionID = piexifGPS['0'];
-                                    const gpsLatitudeRef = piexifGPS[piexif.GPSIFD.GPSLatitudeRef];
-                                    const gpsLatitude = piexifGPS[piexif.GPSIFD.GPSLatitude].map(coord => coord[0] / coord[1]);
-                                    const gpsLongitudeRef = piexifGPS[piexif.GPSIFD.GPSLongitudeRef];
-                                    const gpsLongitude = piexifGPS[piexif.GPSIFD.GPSLongitude].map(coord => coord[0] / coord[1]);
-                                    const latitude = convertDMSToDD(gpsLatitude, gpsLatitudeRef);
-                                    const longitude = convertDMSToDD(gpsLongitude, gpsLongitudeRef);
-                                    const nearestCity = findNearestCity(cities, latitude, longitude);
-                                    console.info(latitude, longitude, "=>", nearestCity);
-                                    if (nearestCity) {
-                                        location = nearestCity.city + '-' + nearestCity.iso2;
+                    try {
+                        exd = loadExifData(imageBuffer);
+                        //console.info(exd);
+                        if (exd) {
+                            try {
+
+                                const piexifGPS = exd.GPS;
+                                if (piexifGPS) {
+
+                                    if (piexifGPS.hasOwnProperty(piexif.GPSIFD.GPSLatitude)) {
+                                        // Extract GPS Data
+                                        const gpsLatitudeRef = piexifGPS[piexif.GPSIFD.GPSLatitudeRef];
+                                        const gpsLatitude = piexifGPS[piexif.GPSIFD.GPSLatitude].map(coord => coord[0] / coord[1]);
+                                        const gpsLongitudeRef = piexifGPS[piexif.GPSIFD.GPSLongitudeRef];
+                                        const gpsLongitude = piexifGPS[piexif.GPSIFD.GPSLongitude].map(coord => coord[0] / coord[1]);
+                                        const latitude = convertDMSToDD(gpsLatitude, gpsLatitudeRef);
+                                        const longitude = convertDMSToDD(gpsLongitude, gpsLongitudeRef);
+                                        // Get closest city
+                                        const nearestCity = findNearestCity(cities, latitude, longitude);
+                                        console.info('[CITY]', latitude, longitude, "=>", nearestCity?.city,nearestCity?.country);
+                                        if (nearestCity) {
+                                            location = nearestCity.city + '-' + nearestCity.iso2;
+                                        }
                                     }
                                 }
                             }
-                        }
-                        catch (e) {
-                            console.error(filePath, "Error Extracting GPS coordinates", e);
-                        }
-
-                        if (exd.Exif) {
-
-                            try {
-
-                                if (exd.Exif[piexif.ExifIFD.DateTimeDigitized]) {
-                                    date = parseExifDateTime(exd.Exif[piexif.ExifIFD.DateTimeDigitized]);
-                                    //console.info('exif date digitized ',piexif.ExifIFD.DateTimeDigitized, date);
-                                }
-
-                                if (exd.Exif[piexif.ExifIFD.DateTimeOriginal]) {
-                                    date = parseExifDateTime(exd.Exif[piexif.ExifIFD.DateTimeOriginal]);
-                                    //console.info('exif date original ',piexif.ExifIFD.DateTimeOriginal, date);
-                                }
-                            }
                             catch (e) {
-                                console.info(filePath, 'Exif Data Error', e);
+                                console.error(filePath, "Error Extracting GPS coordinates", e);
+                            }
+
+                            if (exd.Exif) {
+
+                                try {
+
+                                    if (exd.Exif[piexif.ExifIFD.DateTimeDigitized]) {
+                                        date = parseExifDateTime(exd.Exif[piexif.ExifIFD.DateTimeDigitized]);
+                                        //console.info('exif date digitized ',piexif.ExifIFD.DateTimeDigitized, date);
+                                    }
+
+                                    if (exd.Exif[piexif.ExifIFD.DateTimeOriginal]) {
+                                        date = parseExifDateTime(exd.Exif[piexif.ExifIFD.DateTimeOriginal]);
+                                        //console.info('exif date original ',piexif.ExifIFD.DateTimeOriginal, date);
+                                    }
+                                }
+                                catch (e) {
+                                    console.info(filePath, 'Exif Data Error', e);
+                                }
                             }
                         }
                     }
+                    catch (e) {
+                        console.error(filePath, 'Picture  Data Extraction Error', e);
+                    }
                 }
-                catch (e) {
-                    console.error(filePath, 'Picture  Data Extraction Error', e);
+
+                // Extract video metadata
+                if (process_video_data) {
+                    let data = await extractVideoMetadata(filePath);
+                    console.info("video data:", data);
                 }
+
 
                 if (process_llm) {
                     const analyze_results = await llava_analyze_image(imageBuffer);
@@ -377,36 +418,40 @@ async function processFile(filePath, destDir, cities) {
                     destFilePath = path.join(destPath, path.basename(filePath));
                 }
 
-                let counter = 1;
-                while (await fs.pathExists(destFilePath)) {
-                    const fileName = path.parse(filePath).name;
-                    const fileExt = path.parse(filePath).ext;
-                    destFilePath = path.join(destPath, `${fileName}_${counter}${fileExt}`);
-                    counter++;
-                }
+                if (skip == false) {
+                    let counter = 1;
+                    while (await fs.pathExists(destFilePath)) {
+                        const fileName = path.parse(filePath).name;
+                        const fileExt = path.parse(filePath).ext;
+                        destFilePath = path.join(destPath, `${fileName}_${counter}${fileExt}`);
+                        counter++;
+                    }
 
-                if (process_exif_data && exd && tags.length > 0) {
+                    if (process_exif_data && exd && tags.length > 0) {
                         exifAddTags(exd, tags, caption/*, comment*/);
                         //exifAddCoordinates(exd, 0.49,0.02);
-                        console.log(`copying ${filePath} to ${destFilePath} with exif update` );
+                        console.log(`[COPY] ${filePath} to ${destFilePath} with exif update`);
                         exifSavePicture(exd, imageBuffer, destFilePath);
-                }
-                else process_exif_data= false;
+                    }
+                    else process_exif_data = false;
 
-                if (!process_exif_data) {
-                    // Copier le fichier vers le répertoire de destination
-                    console.log(`copying ${filePath} to ${destFilePath}`);
-                    await fs.copy(filePath, destFilePath);
-                }
+                    if (!process_exif_data) {
+                        // Copier le fichier vers le répertoire de destination
+                        console.log(`[COPY] ${filePath} to ${destFilePath}`);
+                        await fs.copy(filePath, destFilePath);
+                    }
 
-                // Deplacer le fichier dans le repertoire 'processed'
-                if (argv.processedDir) {
-                    const relfilepath = path.relative(argv.sourceDir, filePath);
-                    processedFilePath = path.join(argv.processedDir, relfilepath);
-                    console.log(`moving ${filePath} to ${processedFilePath}`);
-                    await fs.move(filePath, processedFilePath, {overwrite:true});
+                    // Deplacer le fichier dans le repertoire 'processed'
+                    if (argv.processedDir) {
+                        const relfilepath = path.relative(argv.sourceDir, filePath);
+                        processedFilePath = path.join(argv.processedDir, relfilepath);
+                        console.log(`[MOVE] ${filePath} to ${processedFilePath}`);
+                        await fs.move(filePath, processedFilePath, { overwrite: true });
 
+                    }
                 }
+                else
+                console.info("[SKIP]", filePath);
 
             }
         }

@@ -55,6 +55,12 @@ const argv = yargs(hideBin(process.argv))
         description: 'URL for Ollama service',
         default: 'http://localhost:11434'
     })
+    .option('ollamaModel', {
+        alias: 'm',
+        type: 'string',
+        description: 'Vision Model used by ollama',
+        default: 'llava:latest'
+    })
     .option('sourceDir', {
         alias: 's',
         type: 'string',
@@ -70,7 +76,7 @@ const argv = yargs(hideBin(process.argv))
     .option('processedDir', {
         alias: 'p',
         type: 'string',
-        description: 'Destination directory for processed source files',
+        description: 'Destination directory for moving processed source files',
         default: null
     })
     .option('watchFolder', {
@@ -84,6 +90,24 @@ const argv = yargs(hideBin(process.argv))
         type: 'string',
         description: 'Force GPS coordinates to a specific city or GPS data',
         default: null
+    })
+    .option('dryRun', {
+        alias: 'n',
+        type: 'boolean',
+        description: 'Do not apply changes (implies -t)',
+        default: false
+    })
+    .option('textOutput', {
+        alias: 't',
+        type: 'boolean',
+        description: 'list changes made to the files',
+        default: true
+    })
+    .option('addExifTags', {
+        alias: 'T',
+        type: 'boolean',
+        description: 'list changes made to the files',
+        default: false
     })
     .argv;
 
@@ -155,8 +179,6 @@ function exifAddCoordinates(exifData, latitude, longitude) {
 
 }
 
-
-
 function exifAddTags(exifData, tags, caption, comment) {
     if (comment)
         exifData["0th"][piexif.ImageIFD.XPComment] = Array.from(Buffer.from(comment, 'utf-16le'));
@@ -178,12 +200,13 @@ async function sendLLMRequest(apiUrl, requestData) {
                 'Content-Type': 'application/json'
             }
         }).catch(function (error) {
-            console.log(error);
+            console.error('# Error sending LLM request to', apiUrl);
+            console.log(requestData);
         });
         return response.data.response;
 
     } catch (error) {
-        console.error('Error:', error);
+        //console.error('# Error sending LLM request');
         return [];
     }
 }
@@ -200,7 +223,7 @@ async function llava_analyze_image(imageBuffer) {
 
     // Données de la requête
     const requestData = {
-        model: 'llava',
+        model: argv.ollamaModel,
         prompt: 'You are an expert in picture classification and categorization. Provide a list of 6 keywords, only keywords and no comments. keywords will be seperated by commas, on a single line. it will be used as tags to classify pictures in a database',
         images: [imageBase64],
         stream: false
@@ -209,23 +232,13 @@ async function llava_analyze_image(imageBuffer) {
     let tags = await sendLLMRequest(apiUrl, requestData);
 
     const requestData2 = {
-        model: 'llava',
+        model: argv.ollamaModel,
         prompt: 'give a caption title to the picture, providing an accurate description. Only one sentence, 120 characters maximum',
         images: [imageBase64],
         stream: false
     };
 
     let caption = await sendLLMRequest(apiUrl, requestData2);
-
-    /*const requestData3 = {
-        model: 'llava',
-        prompt: 'Analyze the image and list all the elements you can see. Describe their attributes such as color, shape, and position. Do not include any subjective opinions or narratives. 600 characters maximum',
-        images: [imageBase64],
-        stream: false
-    };
-    //comment
-    let comment = await sendLLMRequest(apiUrl, requestData3);
-    */
 
     return { tags, caption };
 }
@@ -276,7 +289,7 @@ async function processFile(filePath, destDir, cities) {
         let location = false;
         let tags = false;
         let caption = false;
-        let comment = "";
+        //let comment = "";
         let skip = false;
 
         if (stat.isFile()) {
@@ -312,7 +325,6 @@ async function processFile(filePath, destDir, cities) {
 
                 //console.log(process_llm, argv.useOllama, !isVideo, !lcfp.endsWith('.webp'));
 
-
                 let imageBuffer;
                 if (isPicture) imageBuffer = fs.readFileSync(filePath);
 
@@ -338,7 +350,7 @@ async function processFile(filePath, destDir, cities) {
                                         const longitude = convertDMSToDD(gpsLongitude, gpsLongitudeRef);
                                         // Get closest city
                                         const nearestCity = findNearestCity(cities, latitude, longitude);
-                                        console.info('[CITY]', latitude, longitude, "=>", nearestCity?.city,nearestCity?.country);
+                                        console.info('# [CITY]', latitude, longitude, "=>", nearestCity?.city,nearestCity?.country);
                                         if (nearestCity) {
                                             location = nearestCity.city + '-' + nearestCity.iso2;
                                         }
@@ -382,13 +394,18 @@ async function processFile(filePath, destDir, cities) {
 
 
                 if (process_llm) {
-                    const analyze_results = await llava_analyze_image(imageBuffer);
-                    tags = analyze_results.tags.toLowerCase().trim().split(',').map(item => item.trim()).sort();
-                    caption = analyze_results.caption;
-                    //comment = analyze_results.comment;
-                    console.info('Tags=', tags);
-                    console.info('caption=', caption);
-                    //console.info('comment=', comment);
+                    try {
+                        const analyze_results = await llava_analyze_image(imageBuffer);
+                        tags = analyze_results.tags.toLowerCase().trim().split(',').map(item => item.trim()).sort();
+                        caption = analyze_results.caption;
+                        //comment = analyze_results.comment;
+                        console.info('Tags=', tags);
+                        console.info('caption=', caption);
+                        //console.info('comment=', comment);
+                    }
+                    catch(e) {
+                        console.error('Error while processing file with ollama')
+                    }
                 }
 
                 // Créer le chemin de destination
@@ -401,7 +418,9 @@ async function processFile(filePath, destDir, cities) {
                 const destPath = path.join(destDir, year, month, day);
 
                 // Créer le répertoire de destination s'il n'existe pas
-                await fs.ensureDir(destPath);
+                if (argv.dryRun==false)
+                    await fs.ensureDir(destPath);
+                
 
                 // Vérifier si le fichier existe déjà dans le répertoire de destination
                 let destFilePath;
@@ -427,31 +446,37 @@ async function processFile(filePath, destDir, cities) {
                         counter++;
                     }
 
-                    if (process_exif_data && exd && tags.length > 0) {
-                        exifAddTags(exd, tags, caption/*, comment*/);
+/*                    if (process_exif_data && exd && tags.length > 0) {
+                        exifAddTags(exd, tags, caption);
                         //exifAddCoordinates(exd, 0.49,0.02);
                         console.log(`[COPY] ${filePath} to ${destFilePath} with exif update`);
-                        exifSavePicture(exd, imageBuffer, destFilePath);
+                        if (argv.dryRun)
+                            exifSavePicture(exd, imageBuffer, destFilePath);
                     }
-                    else process_exif_data = false;
+                    else */
+                    process_exif_data = false;
 
                     if (!process_exif_data) {
                         // Copier le fichier vers le répertoire de destination
-                        console.log(`[COPY] ${filePath} to ${destFilePath}`);
-                        await fs.copy(filePath, destFilePath);
+                        console.log(`cp ${filePath} ${destFilePath}`);
+                        if (argv.dryRun==false)
+                            await fs.copy(filePath, destFilePath);
                     }
 
                     // Deplacer le fichier dans le repertoire 'processed'
                     if (argv.processedDir) {
                         const relfilepath = path.relative(argv.sourceDir, filePath);
                         processedFilePath = path.join(argv.processedDir, relfilepath);
-                        console.log(`[MOVE] ${filePath} to ${processedFilePath}`);
-                        await fs.move(filePath, processedFilePath, { overwrite: true });
+                        
+                        console.log(`mv ${filePath} ${processedFilePath}`);
+                        
+                        if (argv.dryRun==false)
+                            await fs.move(filePath, processedFilePath, { overwrite: true });
 
                     }
                 }
                 else
-                console.info("[SKIP]", filePath);
+                console.info("# [SKIP]", filePath);
 
             }
         }
@@ -494,6 +519,8 @@ async function main() {
     const srcDirectory = argv.sourceDir;
     const destDirectory = argv.destDir;
 
+    console.info("Dryrun",argv.dryRun);
+
     await traverseDirectory(srcDirectory, argv.destDir, cities).catch(console.error);
 
     if (argv.watchFolder == true) {
@@ -506,7 +533,7 @@ async function main() {
 
         // Événement pour les nouveaux fichiers ajoutés
         watcher.on('add', async (filePath) => {
-            console.log(`New file detected: ${filePath}`);
+            console.log(`# New file detected: ${filePath}`);
             //TODO: queue files in async queue
             await processFile(filePath, argv.destDir, cities);
 
@@ -514,12 +541,12 @@ async function main() {
 
         // Événement pour les erreurs
         watcher.on('error', (error) => {
-            console.error('Watcher error:', error);
+            console.error('# Watcher error:', error);
         });
 
         // Événement pour les changements dans le répertoire
         watcher.on('ready', () => {
-            console.log(`Watching for new files in: ${argv.sourceDir}`);
+            console.log(`# Watching for new files in: ${argv.sourceDir}`);
         });
 
 

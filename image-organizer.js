@@ -27,6 +27,7 @@ const piexif = require('piexifjs');
 const ffmpeg = require('fluent-ffmpeg');
 const ffprobePath = require('ffprobe-static').path;
 ffmpeg.setFfprobePath(ffprobePath);
+const createdDirs = new Set();
 
 // Fonction pour extraire les métadonnées d'un fichier vidéo
 function extractVideoMetadata(filePath) {
@@ -59,7 +60,7 @@ const argv = yargs(hideBin(process.argv))
         alias: 'm',
         type: 'string',
         description: 'Vision Model used by ollama',
-        default: 'llava:latest'
+        default: 'llava:7b'
     })
     .option('sourceDir', {
         alias: 's',
@@ -233,7 +234,7 @@ async function llava_analyze_image(imageBuffer) {
 
     const requestData2 = {
         model: argv.ollamaModel,
-        prompt: 'give a caption title to the picture, providing an accurate description. Only one sentence, 120 characters maximum',
+        prompt: 'give a caption title to the picture, providing an accurate description. Only one sentence, 60 characters maximum',
         images: [imageBase64],
         stream: false
     };
@@ -279,6 +280,16 @@ function parseExifDateTime(exifDateTime) {
     // Créer un objet Date en utilisant les composantes
     return new Date(year, month - 1, day, hours, minutes, seconds);
 }
+
+function slugify(text) {
+    return text
+        .normalize("NFD")                   // Décompose les accents (ex: é -> e + ´)
+        .replace(/[\u0300-\u036f]/g, "")    // Supprime les accents
+        .toLowerCase()
+        .replace(/[^a-z0-9\s]/g, "")        // Supprime tout ce qui n'est pas lettre, chiffre ou espace
+        .trim()
+        .replace(/\s+/g, "_");              // Remplace les espaces (un ou plusieurs) par un seul _
+};
 
 async function processFile(filePath, destDir, cities) {
     try {
@@ -350,7 +361,7 @@ async function processFile(filePath, destDir, cities) {
                                         const longitude = convertDMSToDD(gpsLongitude, gpsLongitudeRef);
                                         // Get closest city
                                         const nearestCity = findNearestCity(cities, latitude, longitude);
-                                        console.info('# [CITY]', latitude, longitude, "=>", nearestCity?.city,nearestCity?.country);
+                                        console.info('# [CITY]', latitude, longitude, "=>", nearestCity?.city, nearestCity?.country);
                                         if (nearestCity) {
                                             location = nearestCity.city + '-' + nearestCity.iso2;
                                         }
@@ -396,15 +407,38 @@ async function processFile(filePath, destDir, cities) {
                 if (process_llm) {
                     try {
                         const analyze_results = await llava_analyze_image(imageBuffer);
-                        tags = analyze_results.tags.toLowerCase().trim().split(',').map(item => item.trim()).sort();
-                        caption = analyze_results.caption;
-                        //comment = analyze_results.comment;
-                        console.info('Tags=', tags);
-                        console.info('caption=', caption);
-                        //console.info('comment=', comment);
+ 
+                        console.info('#Caption=', analyze_results.caption);
+                        console.info('#Tags=', analyze_results.tags);
+
+                        caption = slugify(analyze_results.caption);
+                        
+
+                        const tagsArray = analyze_results.tags
+                            .toLowerCase()
+                            .trim()
+                            .split(',')
+                            .map(item => item.trim())
+                            .sort()
+                            .filter(item => item !== "");
+
+                        const filteredTags = tagsArray
+                            .map(tag => slugify(tag)) // On nettoie chaque tag
+                            .filter(tag => {
+                                // On ne garde le tag que s'il n'est pas inclus dans la caption
+                                // On vérifie si cleanCaption contient le tag entouré d'underscores ou en début/fin
+                                const regex = new RegExp(`(^|_)${tag}(_|$)`);
+                                return !regex.test(caption);
+                            });
+                        console.info('#filteredTags=', filteredTags);
+
+                        // On dédoublonne (au cas où) et on trie
+                        tags = [...new Set(filteredTags)].sort();
+
+                        console.info('#Tags=', tags);
                     }
-                    catch(e) {
-                        console.error('Error while processing file with ollama')
+                    catch (e) {
+                        console.error('Error while processing result from ollama')
                     }
                 }
 
@@ -418,19 +452,27 @@ async function processFile(filePath, destDir, cities) {
                 const destPath = path.join(destDir, year, month, day);
 
                 // Créer le répertoire de destination s'il n'existe pas
-                if (argv.dryRun==false)
-                    await fs.ensureDir(destPath);
-                
+                if (!createdDirs.has(destPath)) {
+                    if (argv.dryRun == false) {
+                        await fs.ensureDir(destPath);
+                    }
+                    // 2. On ajoute la commande au script de sortie
+                    const mkdirCommand = `mkdir -p "${destPath}"`;
+                    console.info(mkdirCommand);
+
+                    // 3. On note qu'on l'a déjà traitée pour ce script
+                    createdDirs.add(destPath);
+                }
 
                 // Vérifier si le fichier existe déjà dans le répertoire de destination
                 let destFilePath;
 
-
-                if (process_llm && (tags.length > 0)) {
-                    // Traiter les tags
-                    const processedTags = tags.map(tag => tag.replace(/\s+/g, '_')).join('-');
+                if (process_llm) {
                     // Construire le nouveau nom de fichier
-                    const newFileName = `${parsedPath.name}-${processedTags}${parsedPath.ext}`;
+                    if (tags.length>0) caption=`${caption}-${tags.join('-')}`;
+                    console.info('#caption=', caption);
+
+                    const newFileName = `${parsedPath.name}-${caption}${parsedPath.ext}`;
                     destFilePath = path.join(destPath, newFileName);
                 }
                 else {
@@ -446,20 +488,20 @@ async function processFile(filePath, destDir, cities) {
                         counter++;
                     }
 
-/*                    if (process_exif_data && exd && tags.length > 0) {
-                        exifAddTags(exd, tags, caption);
-                        //exifAddCoordinates(exd, 0.49,0.02);
-                        console.log(`[COPY] ${filePath} to ${destFilePath} with exif update`);
-                        if (argv.dryRun)
-                            exifSavePicture(exd, imageBuffer, destFilePath);
-                    }
-                    else */
+                    /*                    if (process_exif_data && exd && tags.length > 0) {
+                                            exifAddTags(exd, tags, caption);
+                                            //exifAddCoordinates(exd, 0.49,0.02);
+                                            console.log(`[COPY] ${filePath} to ${destFilePath} with exif update`);
+                                            if (argv.dryRun)
+                                                exifSavePicture(exd, imageBuffer, destFilePath);
+                                        }
+                                        else */
                     process_exif_data = false;
 
                     if (!process_exif_data) {
                         // Copier le fichier vers le répertoire de destination
                         console.log(`cp ${filePath} ${destFilePath}`);
-                        if (argv.dryRun==false)
+                        if (argv.dryRun == false)
                             await fs.copy(filePath, destFilePath);
                     }
 
@@ -467,16 +509,16 @@ async function processFile(filePath, destDir, cities) {
                     if (argv.processedDir) {
                         const relfilepath = path.relative(argv.sourceDir, filePath);
                         processedFilePath = path.join(argv.processedDir, relfilepath);
-                        
+
                         console.log(`mv ${filePath} ${processedFilePath}`);
-                        
-                        if (argv.dryRun==false)
+
+                        if (argv.dryRun == false)
                             await fs.move(filePath, processedFilePath, { overwrite: true });
 
                     }
                 }
                 else
-                console.info("# [SKIP]", filePath);
+                    console.info("# [SKIP]", filePath);
 
             }
         }
@@ -519,7 +561,7 @@ async function main() {
     const srcDirectory = argv.sourceDir;
     const destDirectory = argv.destDir;
 
-    console.info("Dryrun",argv.dryRun);
+    console.info("Dryrun", argv.dryRun);
 
     await traverseDirectory(srcDirectory, argv.destDir, cities).catch(console.error);
 

@@ -255,8 +255,8 @@ async function llava_analyze_image(imageBuffer) {
 
         return { tags, caption };
     } catch (e) {
-        console.error(e.message);
-        exit_app = true; //console.log(requestData);
+        console.error('# Error analyzing image with LLM:', e.message);
+        //exit_app = true; //console.log(requestData);
     }
 }
 
@@ -413,9 +413,21 @@ async function processFile(filePath, destDir, cities) {
 
                 // Extract video metadata
                 if (process_video_data) {
-                    let data = await extractVideoMetadata(filePath);
-                    //if (!argv.quiet)
-                    //    console.info("# Video resolution:", data.width, data.height);
+                    try {
+
+                        let data = await extractVideoMetadata(filePath);
+                        if (!argv.quiet) {
+                            //console.info("# [Video] data", data);
+
+                            console.info("# [Video] Date:", data.format.tags.creation_time);
+                            console.info("# [Video] resolution:", data.streams[0].width, data.streams[0].height);
+                            date = parseExifDateTime(data.format.tags.creation_time);
+                            console.info("# [Video] Date:", date);
+                            
+                        }
+                    } catch (e) {
+                        console.error('# [ERROR] Video Data Extraction Error', filePath);
+                    }
                 }
 
                 let analyze_results;
@@ -446,65 +458,67 @@ async function processFile(filePath, destDir, cities) {
 
                     }
                     catch (e) {
-                        console.error(`Error while processing result from ollama for ${filePath}`);
-                        return;
+                        console.error(`#[ERROR] while processing result from ollama for ${filePath}`);
+                        skip = true;
+                        
                     }
                 }
 
-
-                // Créer le chemin de destination:
-                // - en utilisant la date et la localisation
-                // - en gardant la meme arborescence
-                let destPath
-                if (argv.keepTree) {
-                    // On calcule le dossier relatif (ex: source/vacances/plage.jpg -> vacances)                
-                    destPath = path.join(destDir, path.relative(argv.sourceDir, path.dirname(filePath)));
-                }
-                else {
-                    const year = String(date.getFullYear());
-                    const month = String(date.getMonth() + 1).padStart(2, '0');
-                    let day = String(date.getDate()).padStart(2, '0');
-                    if (location)
-                        day = day + '-' + location;
-
-                    destPath = path.join(destDir, year, month, day);
-                }
-
-                // Create dest folder
-                if (!createdDirs.has(destPath)) {
-                    if (argv.run == true) {
-                        await fs.ensureDir(destPath);
-                    }
-                    const mkdirCommand = `mkdir -p "${destPath}"`;
-                    console.info(mkdirCommand);
-
-                    // Keep track of created dirs 
-                    createdDirs.add(destPath);
-                }
-
-                // Vérifier si le fichier existe déjà dans le répertoire de destination
-                let destFilePath;
-
-                if (process_llm) {
-                    // Construire le nouveau nom de fichier
-                    if (tags.length > 0) caption = `${caption}-${tags.join('-')}`;
-                    if (!argv.quiet) {
-                        console.info('# New Caption:', analyze_results.caption);
-                    }
-                    let newFileName;
-                    if (argv.dropOriginalName) {
-                        newFileName =  `${caption}${parsedPath.ext}`;
-                    }
-                    else {                    
-                        newFileName =  `${parsedPath.name}-${caption}${parsedPath.ext}`;                    
-                    }                    
-                    destFilePath = path.join(destPath, newFileName);
-                }
-                else {
-                    destFilePath = path.join(destPath, path.basename(filePath));
-                }
 
                 if (skip == false) {
+                    // Créer le chemin de destination:
+                    // - en utilisant la date et la localisation
+                    // - en gardant la meme arborescence
+                    let destPath
+                    if (argv.keepTree) {
+                        // On calcule le dossier relatif (ex: source/vacances/plage.jpg -> vacances)                
+                        destPath = path.join(destDir, path.relative(argv.sourceDir, path.dirname(filePath)));
+                    }
+                    else {
+                        const year = String(date.getFullYear());
+                        const month = String(date.getMonth() + 1).padStart(2, '0');
+                        let day = String(date.getDate()).padStart(2, '0');
+                        if (location)
+                            day = day + '-' + location;
+
+                        destPath = path.join(destDir, year, month, day);
+                    }
+
+                    // Create dest folder
+                    if (!createdDirs.has(destPath)) {
+                        if (argv.run == true) {
+                            await fs.ensureDir(destPath);
+                        }
+                        const mkdirCommand = `mkdir -p "${destPath}"`;
+                        console.info(mkdirCommand);
+
+                        // Keep track of created dirs 
+                        createdDirs.add(destPath);
+                    }
+
+                    // Vérifier si le fichier existe déjà dans le répertoire de destination
+                    let destFilePath;
+
+                    if (process_llm) {
+                        // Construire le nouveau nom de fichier
+                        if (tags.length > 0) caption = `${caption}-${tags.join('-')}`;
+                        if (!argv.quiet) {
+                            console.info('# New Caption:', analyze_results.caption);
+                        }
+                        let newFileName;
+                        if (argv.dropOriginalName) {
+                            newFileName = `${caption}${parsedPath.ext}`;
+                        }
+                        else {
+                            newFileName = `${parsedPath.name}-${caption}${parsedPath.ext}`;
+                        }
+                        destFilePath = path.join(destPath, newFileName);
+                    }
+                    else {
+                        destFilePath = path.join(destPath, path.basename(filePath));
+                    }
+
+
                     let counter = 1;
                     while (await fs.pathExists(destFilePath)) {
                         const fileName = path.parse(filePath).name;
@@ -569,15 +583,19 @@ async function processFile(filePath, destDir, cities) {
             }
         }
     } catch (error) {
-        console.error('Error:', error);
+        console.error('# [ERROR] ', error.message);
     }
 }
 
+    let numfiles = 0;
+    let processed = 0;
 
 
 async function traverseDirectory(srcDir, destDir, cities) {
     const files = await fs.readdir(srcDir);
+    numfiles += files.length;
     for (const file of files) {
+        console.info(`# Processing ${file} (${++processed}/${numfiles})`);
         if (!exit_app) {
 
             const filePath = path.join(srcDir, file);
@@ -612,6 +630,8 @@ async function main() {
     console.info(argv.run ? "" : "#DRYRUN: no change will be made");
 
     await traverseDirectory(srcDirectory, destDirectory, cities).catch(console.error);
+
+    console.info("# Finished: All files processed");
 
     if (argv.watchFolder == true) {
         // Initialiser le watcher

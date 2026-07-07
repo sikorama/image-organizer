@@ -116,6 +116,12 @@ const argv = yargs(hideBin(process.argv))
         description: 'Drops original name, only keeps name from vision analysis',
         default: false
     })
+    .option('move', {
+        alias: 'M',
+        type: 'boolean',
+        description: 'Move files to destination instead of copying (original is not kept)',
+        default: false
+    })
     /* .option('setGps', {
          alias: 'g',
          type: 'string',
@@ -538,17 +544,22 @@ async function processFile(filePath, destDir, cities) {
                     process_exif_data = false;
 
                     if (!process_exif_data) {
-                        // Copier le fichier vers le répertoire de destination
+                        // Copier ou deplacer le fichier vers le repertoire de destination
                         if (!argv.quiet) {
-                            console.log(`cp ${filePath} ${destFilePath}`);
+                            console.log(`${argv.move ? 'mv' : 'cp'} ${filePath} ${destFilePath}`);
                         }
 
-                        if (argv.run == true)
-                            await fs.copy(filePath, destFilePath);
+                        if (argv.run == true) {
+                            if (argv.move)
+                                await fs.move(filePath, destFilePath, { overwrite: true });
+                            else
+                                await fs.copy(filePath, destFilePath);
+                        }
                     }
 
                     // Deplacer le fichier dans le repertoire 'processed'
-                    if (argv.processedDir) {
+                    // (inutile si --move a deja deplace l'original vers destDir)
+                    if (argv.processedDir && !argv.move) {
                         const relfilepath = path.relative(argv.sourceDir, filePath);
                         destProcessPath = path.join(argv.processedDir, path.relative(argv.sourceDir, path.dirname(filePath)));
                         processedFilePath = path.join(argv.processedDir, relfilepath);

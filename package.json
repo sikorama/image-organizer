@@ -2,7 +2,7 @@
   "name": "image-organizer",
   "version": "1.0.0",
   "description": "A Node.js script to organize images based on EXIF metadata and AI tagging.",
-  "main": "index.js",
+  "main": "image-organizer.js",
   "scripts": {
     "start": "node image-organizer.js",
     "test": "echo \"Error: no test specified\" && exit 1"

@@ -15,10 +15,7 @@ const path = require('path');
 // For parsing cities file
 const csv = require('csv-parser');
 // For LLM
-const axios = require('axios');
-// For ollama
-const instance = axios.create();
-instance.defaults.timeout = 50000;
+const REQUEST_TIMEOUT_MS = 50000;
 // Watch folder mode
 const chokidar = require('chokidar');
 // For Exif Metadata
@@ -213,23 +210,26 @@ function exifAddTags(exifData, tags, caption, comment) {
 }
 
 async function sendLLMRequest(apiUrl, requestData) {
-    //try {
-    const response = await instance.post(apiUrl, requestData, {
-        headers: {
-            'Content-Type': 'application/json'
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
+
+    try {
+        const response = await fetch(apiUrl, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(requestData),
+            signal: controller.signal
+        });
+
+        if (!response.ok) {
+            throw new Error(`LLM request failed with status ${response.status}`);
         }
-    })
-    /*.catch(function (error) {
-        console.error('# Error sending LLM request to', apiUrl);
-        exit_app = true; //console.log(requestData);
 
-    });*/
-    return response.data.response;
-
-    //} catch (error) {
-    //console.error('# Error sending LLM request');
-    //    return [];
-    //}
+        const data = await response.json();
+        return data.response;
+    } finally {
+        clearTimeout(timeout);
+    }
 }
 
 async function llava_analyze_image(imageBuffer) {

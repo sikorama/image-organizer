@@ -10,6 +10,9 @@ The application scans recursively a **Source Directory** for images. For each fi
 3. **Organizes** the file into a destination folder based on its date or original folder structure.
 4. **Writes** metadata back to the file (optional) and handles the source file cleanup.
 
+## Requirements
+* **Node.js >= 18** (the script relies on the native `fetch` API to call Ollama).
+
 ---
 
 ## Configuration Options
